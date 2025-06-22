@@ -8,10 +8,9 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 
-
 load_dotenv()
 
-GROQ_API_KEY = 'os.getenv("GROQ_API_KEY")'
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
@@ -20,7 +19,6 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "default-collection")
 
 
 llm = Groq(model="deepseek-r1-distill-llama-70b", api_key=GROQ_API_KEY)
-
 
 embed_model = HuggingFaceEmbedding(
     model_name=EMBED_MODEL,
