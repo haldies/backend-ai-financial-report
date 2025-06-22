@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+PyPDF2
+llama-index
+torch
+qdrant-client
+huggingface-hub
+transformers
+llama-index-llms-groq
+google-genai
+llama-index-embeddings-huggingface
+llama-index-vector-stores-qdrant
+python-multipart
