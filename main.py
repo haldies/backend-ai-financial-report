@@ -1,16 +1,21 @@
 from fastapi import FastAPI, UploadFile, File, Query,Body
 from pydantic import BaseModel
+from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from llama_index.core.llms import ChatMessage
 import shutil
 import os
+from services.create_vector_index_from_qa_csv import create_vector_index_from_qa_csv
 
 
 from services.extractor import extract_pdf_with_gemini
 from services.indexer import create_vector_index, load_index
-from services.searcher import similarity_search
+from services.searcher import similarity_search_dual
 from services.model_init import vector_store, embed_model
 from services.generator import generate_answer_with_llm
+from services.analyze_query import smart_rag_search
 
 
 app = FastAPI()
@@ -24,36 +29,51 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     query: str
-
+    history: Optional[List[dict]] = [] 
+    
+    
 @app.post("/chat")
 async def rag_query(payload: ChatRequest = Body(...)):
     query = payload.query
+    history_dict = payload.history or []
+
     index = load_index(vector_store)
+    
     if not index:
         return {"error": "❌ Index belum tersedia di Qdrant. Silakan upload dokumen terlebih dahulu."}
 
-    results = similarity_search(index, query, similarity_top_k=3)
-    if not results:
-        return {"error": "❌ Tidak ada dokumen yang relevan ditemukan."}
+    try:
+        nodes1, nodes2, message = smart_rag_search(index, query)
+    except Exception as e:
+        print(f"❌ Error saat smart_rag_search: {e}")
+        return {"error": "Terjadi kesalahan saat pencarian."}
 
-    answer = generate_answer_with_llm(query, results)
+    if message:
+        print(f"💬 Dikenali sebagai sapaan/non-query: {message}")
+        generated_answer_clean = message
+    else:
+        nodes = (nodes1 or []) + (nodes2 or [])
+        if not nodes:
+            print("⚠️ Tidak ada hasil dari similarity search.")
+            generated_answer_clean = "Maaf, informasi tersebut tidak tersedia dalam dokumen."
+        else:
+            context_combined = "\n\n".join([n.node.get_content() for n in nodes])
+
+            history = [ChatMessage(role=h.get("role"), content=h.get("content")) for h in history_dict]
+
+            generated_answer_clean, new_history = generate_answer_with_llm(query, context_combined, history)
+
+            new_history_dict = [{"role": msg.role, "content": msg.content} for msg in new_history]
 
     return {
         "query": query,
-        "jawaban": answer,
-        "jumlah_konteks_digunakan": len(results),
-        "konteks": [
-            {
-                "score": round(node.score, 4),
-                "text": node.node.text[:1000] + "..." if len(node.node.text) > 1000 else node.node.text
-            }
-            for node in results
-        ]
+        "jawaban": generated_answer_clean,
+        "jumlah_konteks_digunakan": len(context_combined.split("\n\n")) if not message and nodes else 0,
+        "history": new_history_dict if not message and nodes else history_dict  # kembalikan history terbaru
     }
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
-    # 1. Simpan file PDF yang diupload
     file_location = f"temp/{file.filename}"
     os.makedirs("temp", exist_ok=True)
     with open(file_location, "wb") as f:
@@ -66,34 +86,128 @@ async def upload_pdf(file: UploadFile = File(...)):
     index = create_vector_index(documents, vector_store, embed_model)
     if not index:
         return {"error": "Gagal membuat vector index ke Qdrant"}
+    node_summaries = []
+
+    try:
+        all_nodes = index.vector_store.get_nodes()
+
+        for i, node in enumerate(all_nodes[:10], 1):  # Ambil hanya 10 node pertama
+            node_summary = {
+                "nomor": i,
+                "text_snippet": node.text[:100].replace("\n", " ") + "...",
+                "metadata": node.metadata
+            }
+            node_summaries.append(node_summary)
+
+    except Exception as e:
+        return {"error": f"Gagal mengambil node: {str(e)}"}
 
     return {
         "pesan": "Berhasil upload, ekstrak, dan indexing",
-        "jumlah_dokumen": len(documents)
+        "jumlah_dokumen": len(documents),
+        "jumlah_node": len(node_summaries),
+        "node_sampel": node_summaries
     }
+
 
 @app.get("/search")
-async def search_similar_text(query: str = Query(...), top_k: int = 3):
-    """Search for similar chunks without generating answer"""
+async def search_similar_text(
+    query1: str = Query(..., description="Pertanyaan pertama (contoh: Berapa EPS tahun 2023?)"),
+    query2: Optional[str] = Query(None, description="Pertanyaan kedua (contoh: Berapa EPS tahun 2024?)"),
+    bank1: Optional[str] = Query(None, description="Nama lengkap bank, contoh: PT BANK MANDIRI (PERSERO) TBK"),
+    bank2: Optional[str] = Query(None, description="Nama lengkap bank, contoh: PT BANK MANDIRI (PERSERO) TBK"),
+    tahun1: Optional[str] = Query(None, description="Tahun untuk query 1"),
+    tahun2: Optional[str] = Query(None, description="Tahun untuk query 2"),
+    top_k: int = Query(5, description="Jumlah hasil teratas untuk setiap query")
+):
+
+    index =  load_index(vector_store) 
+    if not index:
+        return JSONResponse(content={"error": "❌ Index belum tersedia di Qdrant. Buat index terlebih dahulu."}, status_code=404)
+
+    filter1 = {"bank": bank1, "tahun": tahun1}
+    filter2 = {"bank": bank2, "tahun": tahun2}
+
+    nodes1, nodes2 = similarity_search_dual(
+        index=index,
+        query1=query1,
+        query2=query2,
+        filter1=filter1,
+        filter2=filter2,
+        similarity_top_k=top_k
+    )
+
+    def format_nodes(nodes):
+        return [
+            {
+                "score": getattr(node, 'score', None),
+                "content": node.get_content()[:300],  
+                "metadata": node.metadata
+            }
+            for node in nodes
+        ] if nodes else []
+
+    response_data = {
+        "query1_results": format_nodes(nodes1),
+        "query2_results": format_nodes(nodes2) if query2 else None
+    }
+
+    return response_data
+
+
+@app.post("/upload_csv")
+async def upload_csv(file: UploadFile = File(...)):
+    try:
+        # Simpan file temporer
+        temp_file_path = f"temp_uploads/{file.filename}"
+        os.makedirs("temp_uploads", exist_ok=True)
+
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Proses indexing
+        index = create_vector_index_from_qa_csv(
+            csv_path=temp_file_path,
+            vector_store=vector_store,
+            embed_model=embed_model
+        )
+
+        if index is None:
+            return JSONResponse(status_code=500, content={"message": "Gagal membuat index"})
+
+        return {"message": "✅ CSV berhasil diproses dan diindeks ke Qdrant"}
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": f"❌ Error: {str(e)}"})
+
+
+@app.get("/all-nodes")
+async def get_all_nodes(limit: int = 100):
     index = load_index(vector_store)
     if not index:
-        return {"error": "❌ Index belum tersedia di Qdrant. Buat index terlebih dahulu."}
+        return JSONResponse(content={"error": "❌ Index belum tersedia di Qdrant."}, status_code=404)
 
-    results = similarity_search(index, query, similarity_top_k=top_k)
-    
-    return {
-        "query": query,
-        "jumlah_dokumen_ditemukan": len(results),
-        "hasil": [
+    try:
+        all_nodes = index.vector_store.get_nodes()
+        total_nodes = len(all_nodes)
+
+        node_list = [
             {
-                "score": round(node.score, 4),
-                "text": node.node.text[:1000] + "..." if len(node.node.text) > 1000 else node.node.text
+                "nomor": i + 1,
+                "text": node.text,
+                "metadata": node.metadata
             }
-            for node in results
+            for i, node in enumerate(all_nodes[:limit])
         ]
-    }
-    
-    
+
+        return {
+            "total_node_dalam_index": total_nodes,
+            "jumlah_node_ditampilkan": len(node_list),
+            "data": node_list
+        }
+
+    except Exception as e:
+        return JSONResponse(content={"error": f"Gagal mengambil node: {str(e)}"}, status_code=500)
 
 @app.get("/")
 async def root():

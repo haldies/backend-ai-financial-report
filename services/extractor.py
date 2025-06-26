@@ -1,16 +1,28 @@
 import os
 import base64
+import csv
 from PyPDF2 import PdfReader, PdfWriter
 from services.model_init import gemini_client
-from PyPDF2 import PdfReader, PdfWriter
 from tempfile import NamedTemporaryFile
 from llama_index.core.schema import Document
+import re
 
-def extract_pdf_with_gemini(pdf_path):
+
+def extract_bank_and_year_from_question(question: str):
+    bank_match = re.search(r"PT\s+Bank\s+(.+?)\s+Tbk", question, re.IGNORECASE)
+    tahun_match = re.search(r"tahun\s+(\d{4})", question)
+
+    bank = f"PT Bank {bank_match.group(1).strip()} Tbk" if bank_match else "Bank Tidak Diketahui"
+    tahun = tahun_match.group(1) if tahun_match else "0000"
+    return bank.upper(), tahun
+
+def extract_pdf_with_gemini(pdf_path, output_path="output_qna.csv"):
     reader = PdfReader(pdf_path)
-    all_qna_docs = []
+    all_qna = []
+    documents = []
 
     for i, page in enumerate(reader.pages):
+        # Simpan halaman ke file PDF sementara
         writer = PdfWriter()
         writer.add_page(page)
 
@@ -18,46 +30,29 @@ def extract_pdf_with_gemini(pdf_path):
             writer.write(temp_pdf)
             temp_pdf_path = temp_pdf.name
 
+        # Konversi halaman PDF ke base64
         with open(temp_pdf_path, "rb") as f:
             pdf_bytes = f.read()
         os.remove(temp_pdf_path)
 
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        prompt_text = (  """
-                Kamu akan membantu mengekstrak informasi penting dari laporan keuangan perusahaan terbuka di Indonesia, dan menyusunnya dalam bentuk pasangan pertanyaan–jawaban untuk digunakan pada sistem Retrieval-Augmented Generation (RAG).
+        prompt_text = """
+        Anda adalah asisten cerdas yang membantu mengekstrak data dari laporan keuangan perusahaan.
 
-                Aturan Penulisan:
-                - Gunakan **bahasa Indonesia formal dan jelas**.
-                - Jawaban harus **langsung, padat, dan berdasarkan data aktual** dari halaman yang diberikan.
-                - Pertanyaan harus umum namun relevan, seolah ditanyakan oleh pengguna kepada chatbot.
+        Tugas Anda:
+        1. Baca seluruh isi halaman ini dengan cermat
+        2. Ekstrak setiap informasi penting dalam bentuk pasangan pertanyaan dan jawaban (Q&A)
+        3. Gunakan satu fakta untuk satu Q&A. Jangan menggabungkan beberapa informasi jadi satu jawaban
+        4. Jika ada angka, istilah, entitas, atau nilai spesifik (seperti pendapatan, laba, beban, rasio keuangan), buat satu pertanyaan terpisah untuk masing-masing
+        5. Setiap pertanyaan wajib mencantumkan nama lengkap bank dan tahun laporan di dalam teksnya
 
-                Format Output:
-                Tulis hasil dalam format:
-        
-                Q: \[Pertanyaan 1]
-                A: \[Jawaban 1]
+        Format Wajib:
+        Q: [pertanyaan dalam Bahasa Indonesia]
+        A: [jawaban lengkap dan jelas berdasarkan isi halaman]
 
-                Q: \[Pertanyaan 2]
-                A: \[Jawaban 2]
-
-                Contoh :
-
-                Q: Berapa total aset PT Bank ABC pada tahun 2024?
-                A: Total aset perusahaan pada tahun 2024 mencapai Rp1.449 triliun, meningkat dari Rp1.408 triliun di tahun 2023.
-
-                Q: Bagaimana tren laba bersih perusahaan?
-                A: Laba bersih tahun 2024 meningkat 15% dibandingkan tahun 2023, mencapai Rp45 triliun.
-
-                Q: Apa fokus strategi perusahaan menurut Direksi?
-                A: Manajemen menyatakan bahwa fokus perusahaan adalah pada digitalisasi layanan dan efisiensi operasional.
-
-                ```
-
-                Sekarang, ekstrak semua isi halaman dengan lengkap PDF berikut menjadi kumpulan pertanyaan dan jawaban seperti format di atas.
-                """
-                )
-        prompt_text = prompt_text.strip()
+        Jangan menyisipkan opini, ringkasan, atau interpretasi tambahan. Ekstraksi harus lengkap dan akurat sesuai isi halaman.
+        """.strip()
 
         contents = [
             {
@@ -72,15 +67,48 @@ def extract_pdf_with_gemini(pdf_path):
                 ]
             }
         ]
-
         response = gemini_client.models.generate_content(
             model="gemini-2.0-flash",
             contents=contents
         )
 
-        qna_pairs = response.text.strip().split("\n\n")
-        for pair in qna_pairs:
-            if pair.strip():
-                all_qna_docs.append(Document(text=pair.strip()))
+        response_text = response.text.strip()
 
-    return all_qna_docs
+        # Simpan hasil mentah (debug)
+        with open(f"debug_page_{i+1}.txt", "w", encoding="utf-8") as f:
+            f.write(response_text)
+
+        # Parsing QnA hasil ekstraksi
+        for block in response_text.split("\n\n"):
+            if block.startswith("Q:") and "\nA:" in block:
+                try:
+                    q = block.split("\nA:")[0].replace("Q: ", "").strip()
+                    a = block.split("\nA:")[1].strip()
+
+                    bank, tahun = extract_bank_and_year_from_question(q)
+                    all_qna.append([q, a, bank, tahun, "Laporan Tidak Diketahui"])
+
+                    documents.append(Document(
+                        page_content=f"Q: {q}\nA: {a}",
+                        metadata={
+                            "bank": bank,
+                            "tahun": tahun,
+                            "jenis_laporan": "Laporan Tidak Diketahui",
+                            "page": i + 1,
+                            "source": os.path.basename(pdf_path)
+                        }
+                    ))
+
+                except Exception as parse_err:
+                    print(f"Gagal parsing QnA di halaman {i + 1}: {parse_err}")
+                    continue
+                
+    with open(output_path, "w", encoding="utf-8", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Pertanyaan", "Jawaban", "Bank", "Tahun", "Jenis Laporan"])
+        writer.writerows(all_qna)
+
+    print(f"Semua Q&A disimpan di: {output_path}")
+    print(f"Total dokumen yang dihasilkan: {len(documents)}")
+
+    return documents

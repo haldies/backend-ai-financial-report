@@ -10,7 +10,7 @@ from qdrant_client import QdrantClient
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = "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"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
