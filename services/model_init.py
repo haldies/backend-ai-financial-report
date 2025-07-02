@@ -11,7 +11,9 @@ from llama_index.embeddings.voyageai import VoyageEmbedding
 load_dotenv()
 
 VOYAGE_API = os.getenv("VOYAGE_API_KEY")
-GROQ_API_KEY = "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"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = os.getenv("QDRANT_URL")
