@@ -4,6 +4,8 @@ from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import pprint
+
 from llama_index.core.llms import ChatMessage
 import shutil
 import os
@@ -91,7 +93,7 @@ async def upload_pdf(file: UploadFile = File(...)):
     try:
         all_nodes = index.vector_store.get_nodes()
 
-        for i, node in enumerate(all_nodes[:10], 1):  # Ambil hanya 10 node pertama
+        for i, node in enumerate(all_nodes[:10], 1): 
             node_summary = {
                 "nomor": i,
                 "text_snippet": node.text[:100].replace("\n", " ") + "...",
@@ -110,49 +112,79 @@ async def upload_pdf(file: UploadFile = File(...)):
     }
 
 
+
+
 @app.get("/search")
 async def search_similar_text(
     query1: str = Query(..., description="Pertanyaan pertama (contoh: Berapa EPS tahun 2023?)"),
     query2: Optional[str] = Query(None, description="Pertanyaan kedua (contoh: Berapa EPS tahun 2024?)"),
     bank1: Optional[str] = Query(None, description="Nama lengkap bank, contoh: PT BANK MANDIRI (PERSERO) TBK"),
-    bank2: Optional[str] = Query(None, description="Nama lengkap bank, contoh: PT BANK MANDIRI (PERSERO) TBK"),
+    bank2: Optional[str] = Query(None, description="Nama lengkap bank, contoh: PT BANK CENTRAL ASIA TBK"),
     tahun1: Optional[str] = Query(None, description="Tahun untuk query 1"),
     tahun2: Optional[str] = Query(None, description="Tahun untuk query 2"),
     top_k: int = Query(5, description="Jumlah hasil teratas untuk setiap query")
 ):
 
-    index =  load_index(vector_store) 
+    print("🔍 Menerima permintaan pencarian...")
+    print(f"  ✅ Query 1: {query1}")
+    print(f"  ✅ Query 2: {query2}")
+    print(f"  ✅ Filter 1: {{'bank': {bank1}, 'tahun': {tahun1}}}")
+    print(f"  ✅ Filter 2: {{'bank': {bank2}, 'tahun': {tahun2}}}")
+    print(f"  ✅ Top K: {top_k}")
+
+    # Load index
+    print("📦 Memuat index dari vector store...")
+    index = load_index(vector_store)
     if not index:
+        print("❌ Gagal memuat index")
         return JSONResponse(content={"error": "❌ Index belum tersedia di Qdrant. Buat index terlebih dahulu."}, status_code=404)
+    print("✅ Index berhasil dimuat")
 
-    filter1 = {"bank": bank1, "tahun": tahun1}
-    filter2 = {"bank": bank2, "tahun": tahun2}
-
-    nodes1, nodes2 = similarity_search_dual(
-        index=index,
-        query1=query1,
-        query2=query2,
-        filter1=filter1,
-        filter2=filter2,
-        similarity_top_k=top_k
-    )
+    # Lakukan similarity search
+    try:
+        print("🔎 Melakukan similarity search...")
+        filter1 = {"bank": bank1, "tahun": tahun1}
+        filter2 = {"bank": bank2, "tahun": tahun2}
+        nodes1, nodes2 = similarity_search_dual(
+            index=index,
+            query1=query1,
+            query2=query2,
+            filter1=filter1,
+            filter2=filter2,
+            similarity_top_k=top_k
+        )
+    except Exception as e:
+        print(f"❌ Error saat melakukan similarity search: {e}")
+        return JSONResponse(content={"error": f"❌ Error saat similarity search: {str(e)}"}, status_code=500)
 
     def format_nodes(nodes):
         return [
             {
                 "score": getattr(node, 'score', None),
-                "content": node.get_content()[:300],  
+                "content": node.get_content()[:300],
                 "metadata": node.metadata
             }
             for node in nodes
         ] if nodes else []
 
+    formatted_nodes1 = format_nodes(nodes1)
+    formatted_nodes2 = format_nodes(nodes2) if query2 else None
+
+    print("📄 Hasil Query 1:")
+    pprint.pprint(formatted_nodes1)
+
+    if formatted_nodes2:
+        print("📄 Hasil Query 2:")
+        pprint.pprint(formatted_nodes2)
+
     response_data = {
-        "query1_results": format_nodes(nodes1),
-        "query2_results": format_nodes(nodes2) if query2 else None
+        "query1_results": formatted_nodes1,
+        "query2_results": formatted_nodes2,
     }
 
     return response_data
+
+
 
 
 @app.post("/upload_csv")

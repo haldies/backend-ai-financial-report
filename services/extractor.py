@@ -1,11 +1,11 @@
 import os
 import base64
 import csv
+import re
 from PyPDF2 import PdfReader, PdfWriter
 from services.model_init import gemini_client
 from tempfile import NamedTemporaryFile
 from llama_index.core.schema import Document
-import re
 
 
 def extract_bank_and_year_from_question(question: str):
@@ -16,13 +16,16 @@ def extract_bank_and_year_from_question(question: str):
     tahun = tahun_match.group(1) if tahun_match else "0000"
     return bank.upper(), tahun
 
+
 def extract_pdf_with_gemini(pdf_path, output_path="output_qna.csv"):
     reader = PdfReader(pdf_path)
     all_qna = []
     documents = []
 
     for i, page in enumerate(reader.pages):
-        # Simpan halaman ke file PDF sementara
+        print(f"🔍 Memproses halaman {i + 1}...")
+
+        # Simpan halaman sebagai file PDF sementara
         writer = PdfWriter()
         writer.add_page(page)
 
@@ -30,7 +33,6 @@ def extract_pdf_with_gemini(pdf_path, output_path="output_qna.csv"):
             writer.write(temp_pdf)
             temp_pdf_path = temp_pdf.name
 
-        # Konversi halaman PDF ke base64
         with open(temp_pdf_path, "rb") as f:
             pdf_bytes = f.read()
         os.remove(temp_pdf_path)
@@ -67,48 +69,55 @@ def extract_pdf_with_gemini(pdf_path, output_path="output_qna.csv"):
                 ]
             }
         ]
-        response = gemini_client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=contents
-        )
 
-        response_text = response.text.strip()
+        try:
+            response = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=contents
+            )
+            response_text = response.text.strip()
+        except Exception as e:
+            print(f"❌ Gagal mendapatkan respons Gemini di halaman {i+1}: {e}")
+            continue
 
-        # Simpan hasil mentah (debug)
         with open(f"debug_page_{i+1}.txt", "w", encoding="utf-8") as f:
             f.write(response_text)
 
-        # Parsing QnA hasil ekstraksi
-        for block in response_text.split("\n\n"):
-            if block.startswith("Q:") and "\nA:" in block:
-                try:
-                    q = block.split("\nA:")[0].replace("Q: ", "").strip()
-                    a = block.split("\nA:")[1].strip()
+        
+        qna_blocks = re.findall(r"Q:\s*(.*?)\nA:\s*(.*?)(?=\nQ:|\Z)", response_text, re.DOTALL)
 
-                    bank, tahun = extract_bank_and_year_from_question(q)
-                    all_qna.append([q, a, bank, tahun, "Laporan Tidak Diketahui"])
+        if not qna_blocks:
+            print(f"Tidak ditemukan Q&A yang valid di halaman {i+1}")
+            continue
 
-                    documents.append(Document(
-                        page_content=f"Q: {q}\nA: {a}",
-                        metadata={
-                            "bank": bank,
-                            "tahun": tahun,
-                            "jenis_laporan": "Laporan Tidak Diketahui",
-                            "page": i + 1,
-                            "source": os.path.basename(pdf_path)
-                        }
-                    ))
+        for q, a in qna_blocks:
+            try:
+                q = q.strip()
+                a = a.strip()
+                bank, tahun = extract_bank_and_year_from_question(q)
 
-                except Exception as parse_err:
-                    print(f"Gagal parsing QnA di halaman {i + 1}: {parse_err}")
-                    continue
-                
+                all_qna.append([q, a, bank, tahun, "Laporan Tidak Diketahui"])
+
+                documents.append(Document(
+                    text=f"Q: {q}\nA: {a}",
+                    metadata={
+                        "bank": bank,
+                        "tahun": tahun,
+                        "jenis_laporan": "Laporan Tidak Diketahui",
+                        "page": i + 1,
+                        "source": os.path.basename(pdf_path)
+                    }
+                ))
+            except Exception as parse_err:
+                print(f" Gagal parsing QnA di halaman {i + 1}: {parse_err}")
+                continue
+
     with open(output_path, "w", encoding="utf-8", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["Pertanyaan", "Jawaban", "Bank", "Tahun", "Jenis Laporan"])
         writer.writerows(all_qna)
 
-    print(f"Semua Q&A disimpan di: {output_path}")
-    print(f"Total dokumen yang dihasilkan: {len(documents)}")
+    print(f"✅ Semua Q&A disimpan di: {output_path}")
+    print(f"📦 Total dokumen yang dihasilkan: {len(documents)}")
 
     return documents

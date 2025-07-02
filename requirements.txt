@@ -10,5 +10,6 @@ transformers
 llama-index-llms-groq
 google-genai
 llama-index-embeddings-huggingface
+llama-index-embeddings-voyageai
 llama-index-vector-stores-qdrant
 python-multipart

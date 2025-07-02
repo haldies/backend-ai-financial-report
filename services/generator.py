@@ -12,23 +12,23 @@ def generate_answer_with_llm(
     if history is None:
         history = []
 
-    # System prompt tetap di awal conversation
     system_message = ChatMessage(
         role="system",
         content=(
-            "Kamu adalah asisten keuangan profesional. Jawablah pertanyaan berdasarkan dokumen "
-            "laporan keuangan yang tersedia. Jika tidak ada informasi yang relevan, jawab: "
-            "'Maaf, informasi tersebut tidak tersedia dalam dokumen.'"
+            "Kamu adalah asisten keuangan profesional yang membantu pengguna memahami laporan keuangan."
+            " Saat menjawab, jangan hanya menyebutkan angka atau data, tapi juga jelaskan secara singkat "
+            "apa arti data tersebut dan mengapa itu penting, terutama jika mengandung istilah teknis seperti EPS, ROE, "
+            "liabilitas, atau EBITDA. Gunakan bahasa yang mudah dimengerti oleh orang awam."
+            "Jika informasi tidak tersedia di dokumen, jawab: 'Maaf, informasi tersebut tidak tersedia dalam dokumen.'"
         )
     )
+
     
-    # Buat pesan user dengan konteks
     user_message = ChatMessage(
         role="user",
         content=f"Pertanyaan: {query}\n\n=== Konteks Dokumen ===\n{contexts}"
     )
 
-    # Gabungkan pesan: system + history + user
     messages = [system_message] + history + [user_message]
 
     print("📄 Mengirim pesan ke LLM dengan history:")
@@ -38,7 +38,6 @@ def generate_answer_with_llm(
 
     try:
         response = llm.chat(messages)
-        # Tambahkan pesan user dan assistant ke history baru
         new_history = history + [user_message, response.message]
         return response.message.content.strip(), new_history
     except Exception as e:
