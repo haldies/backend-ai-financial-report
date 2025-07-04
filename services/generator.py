@@ -1,7 +1,8 @@
 
 from llama_index.core.llms import ChatMessage
-from services.model_init import llm 
+from services.model_init import llm
 from typing import List, Optional
+
 
 def generate_answer_with_llm(
     query: str,
@@ -15,18 +16,22 @@ def generate_answer_with_llm(
     system_message = ChatMessage(
         role="system",
         content=(
-            "Kamu adalah asisten keuangan profesional yang membantu pengguna memahami laporan keuangan."
-            " Saat menjawab, jangan hanya menyebutkan angka atau data, tapi juga jelaskan secara singkat "
-            "apa arti data tersebut dan mengapa itu penting, terutama jika mengandung istilah teknis seperti EPS, ROE, "
-            "liabilitas, atau EBITDA. Gunakan bahasa yang mudah dimengerti oleh orang awam."
-            "Jika informasi tidak tersedia di dokumen, jawab: 'Maaf, informasi tersebut tidak tersedia dalam dokumen.'"
+            "Kamu adalah asisten keuangan profesional yang membantu pengguna memahami laporan keuangan. "
+            "Saat menjawab, prioritaskan informasi yang tersedia dalam riwayat percakapan sebelum melihat konteks dokumen. "
+            "Jangan hanya menyebutkan angka atau data, tapi juga jelaskan secara singkat arti dan pentingnya. "
+            "Jika informasi tidak tersedia baik di history maupun konteks, jawab: 'Maaf, informasi tersebut tidak tersedia dalam dokumen.'"
         )
     )
 
-    
     user_message = ChatMessage(
         role="user",
-        content=f"Pertanyaan: {query}\n\n=== Konteks Dokumen ===\n{contexts}"
+        content=(
+            f"Pertanyaan: {query}\n\n"
+            "Jawab berdasarkan informasi yang tersedia di riwayat percakapan (jika relevan), "
+            "sebelum memeriksa konteks dokumen. Hanya gunakan konteks dokumen jika informasi belum ada di history.\n\n"
+            "=== Konteks Dokumen ===\n"
+            f"{contexts}"
+        )
     )
 
     messages = [system_message] + history + [user_message]

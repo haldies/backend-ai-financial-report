@@ -7,14 +7,28 @@ from services.model_init import gemini_client
 from tempfile import NamedTemporaryFile
 from llama_index.core.schema import Document
 
-
 def extract_bank_and_year_from_question(question: str):
-    bank_match = re.search(r"PT\s+Bank\s+(.+?)\s+Tbk", question, re.IGNORECASE)
-    tahun_match = re.search(r"tahun\s+(\d{4})", question)
-
-    bank = f"PT Bank {bank_match.group(1).strip()} Tbk" if bank_match else "Bank Tidak Diketahui"
+    bank_match = re.search(
+        r"((?:PT\.?\s*)?BANK[\w\s().,&'-]*)\s*(?:pada|tahun|[.,?]|$)", 
+        question, 
+        re.IGNORECASE
+    )
+    tahun_match = re.search(r"tahun\s+(\d{4})", question, re.IGNORECASE)
     tahun = tahun_match.group(1) if tahun_match else "0000"
-    return bank.upper(), tahun
+    
+    if bank_match:
+        bank_text = bank_match.group(1).lower()
+        if "mandiri" in bank_text:
+            bank = "PT BANK MANDIRI (PERSERO) TBK"
+        elif "bca" in bank_text or "central asia" in bank_text:
+            bank = "PT BANK CENTRAL ASIA TBK"
+        else:
+            bank = bank_match.group(1).upper().strip()
+    else:
+        bank = "BANK TIDAK DIKETAHUI"
+    
+    return bank, tahun
+
 
 
 def extract_pdf_with_gemini(pdf_path, output_path="output_qna.csv"):
